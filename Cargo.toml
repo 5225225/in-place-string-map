@@ -1,0 +1,9 @@
+[package]
+name = "in-place-string-map"
+version = "0.1.0"
+authors = ["5225225 <5225225@mailbox.org>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
