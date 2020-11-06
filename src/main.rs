@@ -88,7 +88,7 @@ impl MapInPlace<'_> {
                 }
             }
         }
-        
+
         self.mapped_head += chlen;
         self.fix_utf8();
 
@@ -189,7 +189,7 @@ mod tests {
                         let popped = m.pop_chars(n);
 
                         let model_str = {
-                            if model.unmapped.len() < n || n == 0 { 
+                            if model.unmapped.len() < n || n == 0 {
                                 None
                             } else {
                                 let mut temp = String::new();
