@@ -1,8 +1,3 @@
-#![feature(unsafe_block_in_unsafe_fn)]
-#![deny(unsafe_op_in_unsafe_fn)]
-#![feature(slice_fill)]
-#![feature(clamp)]
-
 #[derive(Debug)]
 struct MapInPlace<'a> {
     buf: &'a mut Vec<u8>,
@@ -151,39 +146,6 @@ fn decode_percent(s: &mut String) {
     }
 }
 
-fn decode_c(s: &mut String) {
-    let mut m = MapInPlace::new(s);
-
-    while let Some(c) = m.pop() {
-        match c {
-            '\\' => {
-                match m.pop() {
-                    Some('a') => m.push('\x07'),
-                    Some('b') => m.push('\x08'),
-                    Some('e') => m.push('\x1b'),
-                    Some('f') => m.push('\x0c'),
-                    Some('n') => m.push('\x0a'),
-                    Some('r') => m.push('\x0d'),
-                    Some('t') => m.push('\x09'),
-                    Some('v') => m.push('\x0b'),
-                    Some('\\') => m.push('\x5c'),
-                    Some('\'') => m.push('\x27'),
-                    Some('\"') => m.push('\x22'),
-                    Some('?') => m.push('\x3f'),
-                    Some(num @ '0'..='9') => {
-
-                    }
-                    None => break,
-                };
-            }
-
-            _ => {
-
-            }
-        }
-    }
-}
-
 fn main() {
     let mut percent = "abc%64%65fg".to_string();
     decode_percent(&mut percent);
@@ -192,6 +154,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
     use super::*;
 
     #[derive(proptest_derive::Arbitrary, Debug)]
@@ -206,7 +169,11 @@ mod tests {
         mapped: String,
     }
 
-    proptest::proptest! {
+    proptest! {
+        #![proptest_config(ProptestConfig { 
+            max_global_rejects: 5000,
+            ..Default::default()
+        })]
         #[test]
         fn always_valid(mut start: String, ops: Vec<TestOp>) {
             let mut model = Model { unmapped: start.clone(), mapped: String::new()};
