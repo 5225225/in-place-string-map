@@ -117,7 +117,7 @@ impl<'a> MapInPlace<'a> {
             return None;
         }
 
-        let (idx, c) = self.unmapped().char_indices().nth(n-1)?;
+        let (idx, c) = self.unmapped().char_indices().nth(n - 1)?;
 
         let to_take = idx + c.len_utf8();
 
@@ -154,8 +154,8 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use proptest::prelude::*;
     use super::*;
+    use proptest::prelude::*;
 
     #[derive(proptest_derive::Arbitrary, Debug)]
     enum TestOp {
@@ -170,7 +170,7 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig { 
+        #![proptest_config(ProptestConfig {
             max_global_rejects: 5000,
             ..Default::default()
         })]
