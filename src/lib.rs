@@ -1,5 +1,5 @@
 #[derive(Debug)]
-struct MapInPlace<'a> {
+pub struct MapInPlace<'a> {
     buf: &'a mut Vec<u8>,
     mapped_head: usize,
     unmapped_head: usize,
@@ -12,7 +12,7 @@ impl std::ops::Drop for MapInPlace<'_> {
 }
 
 #[derive(Debug)]
-struct NoCapacityError;
+pub struct NoCapacityError;
 
 impl<'a> MapInPlace<'a> {
     /// Creates a new `MapInPlace`, used to do in-place string conversions without allocating a new
@@ -55,8 +55,8 @@ impl<'a> MapInPlace<'a> {
         }
     }
 
-    /// Reads the string as a while. The contents of the section not included in either [`mapped`]
-    /// or [`unmapped`] are unspecified, but the string as a whole is guaranteed to be valid UTF-8.
+    /// Reads the string as a while. The contents of the section not included in either `mapped`
+    /// or `unmapped` are unspecified, but the string as a whole is guaranteed to be valid UTF-8.
     pub fn all(&self) -> &str {
         unsafe { std::str::from_utf8_unchecked(&self.buf[..]) }
     }
@@ -98,6 +98,21 @@ impl<'a> MapInPlace<'a> {
         Ok(())
     }
 
+    pub fn push_str(&mut self, s: &str) -> Result<(), NoCapacityError> {
+        if self.mapped_head + s.len() > self.unmapped_head {
+            return Err(NoCapacityError);
+        }
+
+        unsafe {
+            self.raw_push_bytes(&s.as_bytes())?;
+        }
+
+        self.mapped_head += s.len();
+        self.fix_utf8();
+
+        Ok(())
+    }
+
     /// Pops a character from the start of the unmapped portion
     pub fn pop(&mut self) -> Option<char> {
         let ch = self.unmapped().chars().next()?;
@@ -112,6 +127,9 @@ impl<'a> MapInPlace<'a> {
     /// Pops a character from the start of the unmapped portion
     ///
     /// If `n` is 0 then will always return [`None`]
+    ///
+    /// If this fails then `unmapped` will contain what can be popped, and no changes will have
+    /// been made to `self`.
     pub fn pop_chars(&mut self, n: usize) -> Option<&str> {
         if n == 0 {
             return None;
@@ -127,29 +145,6 @@ impl<'a> MapInPlace<'a> {
 
         unsafe { Some(std::str::from_utf8_unchecked(s)) }
     }
-}
-
-fn decode_percent(s: &mut String) {
-    let mut m = MapInPlace::new(s);
-
-    while let Some(c) = m.pop() {
-        match c {
-            '%' => {
-                let num = m.pop_chars(2).expect("not enough chars");
-                let n = u8::from_str_radix(num, 16).expect("invalid hex");
-                m.push(n as char).expect("no more capacity");
-            }
-            _ => {
-                m.push(c).expect("no more capacity");
-            }
-        }
-    }
-}
-
-fn main() {
-    let mut percent = "abc%64%65fg".to_string();
-    decode_percent(&mut percent);
-    assert_eq!(percent, "abcdefg");
 }
 
 #[cfg(test)]
