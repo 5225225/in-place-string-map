@@ -3,7 +3,7 @@
 Someone said C was better than Rust at in-place string modifications. So I made this.
 
 ```rust
-fn decode_percent(s: &mut String) {
+fn decode_percent(s: &mut str) -> &mut str {
     let mut m = MapInPlace::new(s);
 
     while let Some(c) = m.pop() {
@@ -18,6 +18,8 @@ fn decode_percent(s: &mut String) {
             }
         }
     }
+
+    m.into_mapped()
 }
 ```
 
@@ -25,3 +27,7 @@ The only thing you need to be careful of is to not push more bytes than you
 have popped so far. Here it's fine since %ff is 2 bytes long (the longest it
 can be) but took 3 bytes of source text. It's not unsafe to do this of course,
 you'll just fail to push.
+
+More details about how it works are both in the code (it's somewhat commented)
+and [the blog
+post](https://www.5snb.club/posts/2021/03/27/in-place-string-mapping.html).
