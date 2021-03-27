@@ -1,14 +1,12 @@
+#![warn(clippy::all)]
+#![warn(clippy::pedantic)]
+#![warn(clippy::nursery)]
+
 #[derive(Debug)]
 pub struct MapInPlace<'a> {
-    buf: &'a mut Vec<u8>,
+    buf: &'a mut [u8],
     mapped_head: usize,
     unmapped_head: usize,
-}
-
-impl std::ops::Drop for MapInPlace<'_> {
-    fn drop(&mut self) {
-        self.buf.truncate(self.mapped_head);
-    }
 }
 
 #[derive(Debug)]
@@ -20,58 +18,72 @@ impl<'a> MapInPlace<'a> {
     ///
     /// This can only be done if the conversion does not increase the length of the string (So
     /// calling this on an empty string is useless).
-    pub fn new(s: &'a mut String) -> Self {
-        // I'm assuming that as_mut_vec has a similar requirement to str::as_bytes_mut
-        // Namely, from now until the MapInPlace reference ends, the string is allowed to be invalid
+    pub fn new(s: &'a mut str) -> Self {
+        // Safety:
         //
-        // So as long as we fix up the string to be valid UTF-8 before the end of every function that
-        // may have invalidated it, this is sound.
-        //
-        // Leaks are perfectly safe though! The only fixups we do in the Drop impl are to remove the
-        // unmapped portion.
-        unsafe {
-            MapInPlace {
-                buf: s.as_mut_vec(),
-                mapped_head: 0,
-                unmapped_head: 0,
-            }
+        // When this borrow ends (MapInPlace is dropped), the string must be valid UTF-8.
+        // We also need to never expose invalid UTF-8 to the user.
+        let buf = unsafe { s.as_bytes_mut() };
+
+        MapInPlace {
+            buf,
+            mapped_head: 0,
+            unmapped_head: 0,
         }
     }
 
-    /// Reads the mapped portion of the string
+    /// Returns the mapped portion of the string.
+    #[must_use]
     pub fn mapped(&self) -> &str {
-        unsafe { std::str::from_utf8_unchecked(&self.buf[0..self.mapped_head]) }
+        &self.all()[0..self.mapped_head]
     }
 
-    /// Reads the unmapped portion of the string
+    /// Consumes this [`MapInPlace`] and returns the mapped slice of the original string with the
+    /// original lifetime.
+    #[must_use]
+    pub fn into_mapped(self) -> &'a mut str {
+        let mapped_head = self.mapped_head;
+
+        &mut self.into_all()[0..mapped_head]
+    }
+
+    /// Returns the not yet mapped portion of the string.
+    #[must_use]
     pub fn unmapped(&self) -> &str {
-        unsafe { std::str::from_utf8_unchecked(&self.buf[self.unmapped_head..]) }
+        &self.all()[self.unmapped_head..]
     }
 
-    fn fix_utf8(&mut self) {
-        // This could be optimised, but for now this works.
-        for ch in &mut self.buf[self.mapped_head..self.unmapped_head] {
-            *ch = 0;
-        }
+    /// Consumes this [`MapInPlace`] and returns the unmapped slice of the original string with the
+    /// original lifetime.
+    #[must_use]
+    pub fn into_unmapped(self) -> &'a mut str {
+        let unmapped_head = self.unmapped_head;
+
+        &mut self.into_all()[unmapped_head..]
     }
 
-    /// Reads the string as a while. The contents of the section not included in either `mapped`
+    /// Reads the string as a whole. The contents of the section not included in either `mapped`
     /// or `unmapped` are unspecified, but the string as a whole is guaranteed to be valid UTF-8.
+    #[must_use]
     pub fn all(&self) -> &str {
+        // Safety: self.buf is always valid UTF-8 if the user has access to it, so this is safe.
         unsafe { std::str::from_utf8_unchecked(&self.buf[..]) }
     }
 
-    unsafe fn raw_push_bytes(&mut self, bytes: &[u8]) -> Result<(), NoCapacityError> {
-        if self.buf.len() < self.mapped_head + bytes.len() {
-            return Err(NoCapacityError);
-        }
-        self.buf[self.mapped_head..self.mapped_head + bytes.len()].copy_from_slice(bytes);
-
-        Ok(())
+    /// Returns the original mapping given to [`MapInPlace::new`]. The contents of the section not
+    /// included in either `mapped` or `unmapped` are unspecified, but the string as a whole is
+    /// guaranteed to be valid UTF-8.
+    #[must_use]
+    pub fn into_all(self) -> &'a mut str {
+        // Safety: self.buf is always valid UTF-8 if the user has access to it, so this is safe.
+        unsafe { std::str::from_utf8_unchecked_mut(self.buf) }
     }
 
-    /// Pushes a character onto the end of the mapped portion. Will return [`Err(NoCapacityError)`]
-    /// if there is no room.
+    /// Pushes a character onto the end of the mapped portion.
+    ///
+    /// # Errors
+    ///
+    /// * [`NoCapacityError`]: If there is not enough room to fit `ch` being pushed.
     pub fn push(&mut self, ch: char) -> Result<(), NoCapacityError> {
         let chlen = ch.len_utf8();
 
@@ -79,52 +91,48 @@ impl<'a> MapInPlace<'a> {
             return Err(NoCapacityError);
         }
 
-        match chlen {
-            1 => {
-                *self.buf.get_mut(self.mapped_head).ok_or(NoCapacityError)? = ch as u8;
-            }
-            _ => {
-                let mut tempbuf = [0_u8; 4_usize];
-                let sbytes = ch.encode_utf8(&mut tempbuf).as_bytes();
-                unsafe {
-                    self.raw_push_bytes(&sbytes)?;
-                }
-            }
-        }
+        let mut tempbuf = [0_u8; 4_usize];
 
-        self.mapped_head += chlen;
-        self.fix_utf8();
+        let sbytes = ch.encode_utf8(&mut tempbuf);
+
+        self.push_str(sbytes)?;
 
         Ok(())
     }
 
+    /// Pushes a string onto the end of the mapped portion.
+    ///
+    /// # Errors
+    ///
+    /// * [`NoCapacityError`]: If there is not enough room to fit `s` being pushed.
     pub fn push_str(&mut self, s: &str) -> Result<(), NoCapacityError> {
-        if self.mapped_head + s.len() > self.unmapped_head {
+        let bytes = s.as_bytes();
+
+        if self.buf.len() < self.mapped_head + bytes.len() {
             return Err(NoCapacityError);
         }
 
-        unsafe {
-            self.raw_push_bytes(&s.as_bytes())?;
-        }
+        // Safety: self.buf must be valid UTF-8 once this ends.
+        //
+        // It consists of ..mapped_head, which is a `str` and we only push valid strs onto it
+        // mapped_head..unmapped_head, which is zeroed out below, and thus valid UTF-8
+        // unmapped_head.., which is a `str` and we only pop chars from it
+        self.buf[self.mapped_head..self.mapped_head + bytes.len()].copy_from_slice(bytes);
 
         self.mapped_head += s.len();
-        self.fix_utf8();
+
+        self.buf[self.mapped_head..self.unmapped_head].fill(0);
 
         Ok(())
     }
 
     /// Pops a character from the start of the unmapped portion
     pub fn pop(&mut self) -> Option<char> {
-        let ch = self.unmapped().chars().next()?;
-
-        let l = ch.len_utf8();
-
-        self.unmapped_head += l;
-
-        Some(ch)
+        self.pop_chars(1)
+            .map(|x| x.chars().next().expect("pop_chars did not pop a char"))
     }
 
-    /// Pops a character from the start of the unmapped portion
+    /// Pops `n` characters from the start of the unmapped portion
     ///
     /// If `n` is 0 then will always return [`None`]
     ///
@@ -143,6 +151,7 @@ impl<'a> MapInPlace<'a> {
 
         self.unmapped_head += to_take;
 
+        // safety: who knows?
         unsafe { Some(std::str::from_utf8_unchecked(s)) }
     }
 }

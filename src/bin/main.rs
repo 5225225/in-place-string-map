@@ -1,6 +1,6 @@
 use in_place_string_map::MapInPlace;
 
-fn decode_percent(s: &mut String) {
+fn decode_percent(s: &mut str) -> &mut str {
     let mut m = MapInPlace::new(s);
 
     while let Some(c) = m.pop() {
@@ -15,10 +15,12 @@ fn decode_percent(s: &mut String) {
             }
         }
     }
+
+    m.into_mapped()
 }
 
 fn main() {
     let mut percent = "abc%64%65fg".to_string();
-    decode_percent(&mut percent);
-    assert_eq!(percent, "abcdefg");
+    let mapped_percent = decode_percent(&mut percent);
+    assert_eq!(mapped_percent, "abcdefg");
 }
