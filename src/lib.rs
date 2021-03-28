@@ -9,8 +9,24 @@ pub struct MapInPlace<'a> {
     unmapped_head: usize,
 }
 
+/// Checks that `byte` is the first byte in a UTF-8 code point
+/// sequence
+///
+/// Based of std library str::is_char_boundary
+#[inline]
+fn is_char_start(byte: u8) -> bool {
+    // This is bit magic equivalent to: b < 128 || b >= 192
+    return (byte as i8) >= -0x40;
+}
+
 #[derive(Debug)]
 pub struct NoCapacityError;
+
+// When zeroing sections of the string to ensure valid UTF-8, anything smaller than this will just
+// be zeroed with a .fill(), rather than trying to stop early.
+//
+// Anything larger will try to stop as early as it can and still ensure valid UTF-8
+const PARTIAL_ZERO_SIZE: usize = 32;
 
 impl<'a> MapInPlace<'a> {
     /// Creates a new `MapInPlace`, used to do in-place string conversions without allocating a new
@@ -118,15 +134,27 @@ impl<'a> MapInPlace<'a> {
 
         // Safety: self.buf must be valid UTF-8 once this ends.
         //
-        // It consists of ..mapped_head, which is a `str` and we only push valid strs onto it
-        // mapped_head..unmapped_head, which is zeroed out below, and thus valid UTF-8
+        // It consists of:
+        // ..mapped_head, which is a `str` and we only push valid strs onto it
+        // mapped_head..unmapped_head, which consists of the previous contents of the str
         // unmapped_head.., which is a `str` and we only pop chars from it
         self.buf[self.mapped_head..self.mapped_head + bytes.len()].copy_from_slice(bytes);
 
-        self.mapped_head += s.len();
+        self.mapped_head += bytes.len();
         debug_assert!(self.mapped_head <= self.unmapped_head);
+        
+        let area_to_zero = &mut self.buf[self.mapped_head..self.unmapped_head];
 
-        self.buf[self.mapped_head..self.unmapped_head].fill(0);
+        if area_to_zero.len() > PARTIAL_ZERO_SIZE {
+            for byte in area_to_zero {
+                if is_char_start(*byte) {
+                    break;
+                }
+                *byte = 0;
+            }
+        } else {
+            area_to_zero.fill(0);
+        }
 
         Ok(())
     }
