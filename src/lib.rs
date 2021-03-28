@@ -112,6 +112,10 @@ impl<'a> MapInPlace<'a> {
             return Err(NoCapacityError);
         }
 
+        if self.unmapped_head < self.mapped_head + bytes.len() {
+            return Err(NoCapacityError);
+        }
+
         // Safety: self.buf must be valid UTF-8 once this ends.
         //
         // It consists of ..mapped_head, which is a `str` and we only push valid strs onto it
@@ -120,6 +124,7 @@ impl<'a> MapInPlace<'a> {
         self.buf[self.mapped_head..self.mapped_head + bytes.len()].copy_from_slice(bytes);
 
         self.mapped_head += s.len();
+        debug_assert!(self.mapped_head <= self.unmapped_head);
 
         self.buf[self.mapped_head..self.unmapped_head].fill(0);
 
@@ -159,69 +164,11 @@ impl<'a> MapInPlace<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
 
-    #[derive(proptest_derive::Arbitrary, Debug)]
-    enum TestOp {
-        Pop,
-        PopChars(usize),
-        Push(char),
-    }
-
-    struct Model {
-        unmapped: String,
-        mapped: String,
-    }
-
-    proptest! {
-        #![proptest_config(ProptestConfig {
-            max_global_rejects: 5000,
-            ..Default::default()
-        })]
-        #[test]
-        fn always_valid(mut start: String, ops: Vec<TestOp>) {
-            let mut model = Model { unmapped: start.clone(), mapped: String::new()};
-
-            let mut m = MapInPlace::new(&mut start);
-
-            for o in ops {
-                match o {
-                    TestOp::Pop => {
-                        let real = m.pop();
-
-                        let model = if model.unmapped.len() == 0 {
-                            None
-                        } else {
-                            Some(model.unmapped.remove(0))
-                        };
-
-                        assert_eq!(real, model);
-                    },
-                    TestOp::Push(c) => {
-                        proptest::prop_assume!(m.push(c).is_ok());
-                        model.mapped.push(c);
-                    }
-                    TestOp::PopChars(n) => {
-                        let popped = m.pop_chars(n);
-
-                        let model_str = {
-                            if model.unmapped.len() < n || n == 0 {
-                                None
-                            } else {
-                                let mut temp = String::new();
-                                for _ in 0..n { temp.push(model.unmapped.remove(0)); }
-                                Some(temp)
-                            }
-                        };
-
-                        assert_eq!(popped, model_str.as_deref());
-                    }
-                }
-
-                assert_eq!(std::str::from_utf8(m.all().as_bytes()).unwrap(), m.all(), "UTF-8 did not round trip");
-                assert_eq!(m.unmapped(), model.unmapped, "unmapped did not match");
-                assert_eq!(m.mapped(), model.mapped, "mapped did not match");
-            }
-        }
+    #[test]
+    fn cannot_remove_from_end() {
+        let mut initial = "㉉".to_string();
+        let mut mapper = MapInPlace::new(&mut initial);
+        mapper.pop_chars(3);
     }
 }

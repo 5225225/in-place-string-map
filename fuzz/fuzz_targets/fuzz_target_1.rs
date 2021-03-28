@@ -59,6 +59,10 @@ fuzz_target!(|ops: Ops<'_>| {
                     Op::PopChars(n) => {
                         let popped = m.pop_chars(n);
 
+                        if popped.is_none() {
+                            continue;
+                        }
+
                         let model_str = {
                             if model.unmapped.len() < n || n == 0 {
                                 None
