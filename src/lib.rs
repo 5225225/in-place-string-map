@@ -137,6 +137,7 @@ impl<'a> MapInPlace<'a> {
         // It consists of:
         // ..mapped_head, which is a `str` and we only push valid strs onto it
         // mapped_head..unmapped_head, which consists of the previous contents of the str
+        //   where an unspecified amount is zeroed
         // unmapped_head.., which is a `str` and we only pop chars from it
         self.buf[self.mapped_head..self.mapped_head + bytes.len()].copy_from_slice(bytes);
 
