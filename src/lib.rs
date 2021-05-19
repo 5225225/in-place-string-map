@@ -1,22 +1,125 @@
+//! `in_place_string_map` is a library for doing string manipulation in place.
+//!
+//! Normally in Rust, if you wanted to handle escapes, for example, you'd need to either map to a
+//! new String, causing allocations, or do `.remove` and `.insert` calls on a String, which
+//! wouldn't cause reallocations if you never grow the String, but *would* cause slowdowns on large
+//! strings due to the need to backshift elements on every item.
+//!
+//! Here, you can just do
+//!
+//! ```rust
+//! use in_place_string_map::MapInPlace;
+//!
+//! fn decode_percent(s: &mut str) -> &mut str {
+//!     let mut m = MapInPlace::new(s);
+//!
+//!     while let Some(c) = m.pop() {
+//!         match c {
+//!             '%' => {
+//!                 let num = m.pop_chars(2).expect("not enough chars");
+//!                 let n = u8::from_str_radix(num, 16).expect("invalid hex");
+//!                 m.push(n as char).expect("no more capacity");
+//!             }
+//!             _ => {
+//!                 m.push(c).expect("no more capacity");
+//!             }
+//!         }
+//!     }
+//!
+//!     m.into_mapped()
+//! }
+//!
+//! let mut input = String::from("%54r%61ns %52igh%74%73%21");
+//!
+//! assert_eq!(decode_percent(&mut input), "Trans Rights!");
+//! ```
+//!
+//! ## Safety
+//!
+//! This library takes care to ensure that the input string is always left in a valid state.
+//! 
+//! Since [`std::mem::forget`] is safe, no code can soundly rely on users to call destructors. The
+//! contents of the original borrowed string after any operation is left unspecified generally, but
+//! it is guaranteed to always be valid UTF-8.
+
+#![cfg_attr(not(test), no_std)]
+// https://twitter.com/reduct_rs/status/1387153973010829315
+
 #![warn(clippy::all)]
 #![warn(clippy::pedantic)]
 #![warn(clippy::nursery)]
 
+/// Safety: Identical to [`core::str::from_utf8_unchecked`], only has a debug assertion that it is
+/// indeed valid UTF-8.
+unsafe fn from_utf8_unchecked(input: &[u8]) -> &str {
+    debug_assert!(
+        core::str::from_utf8(input).is_ok(),
+        "{:?} was invalid UTF-8",
+        input
+    );
+
+    core::str::from_utf8_unchecked(input)
+}
+
+/// Safety: Identical to [`core::str::from_utf8_unchecked_mut`], only has a debug assertion that it is
+/// indeed valid UTF-8.
+unsafe fn from_utf8_unchecked_mut(input: &mut [u8]) -> &mut str {
+    debug_assert!(
+        core::str::from_utf8(input).is_ok(),
+        "{:?} was invalid UTF-8",
+        input
+    );
+
+    core::str::from_utf8_unchecked_mut(input)
+}
+
 #[derive(Debug)]
+/// A mutable reference to a [`str`] that allows for in-place pushes and pops while maintaining
+/// valid UTF-8 at all times.
+///
+/// Semantically, this creates 2 buffers, a "mapped" buffer, and an "unmapped" buffer.
+///
+/// The mapped buffer starts off empty, and the unmapped buffer starts off with the full contents
+/// of the `&mut str` given in [`MapInPlace::new`].
+///
+/// The mapped buffer can be pushed to, and this will append to the end of it. The unmapped buffer
+/// can be popped from, and this will pop from the start of it.
+///
+/// The size of the mapped buffer, plus the size of the unmapped buffer, can never be bigger than
+/// the original string size, and you will get errors when you go to push if this is the case.
+///
+/// However, it's free to be smaller, in which case there will be some area in the middle with
+/// unspecified contents. It will still be valid UTF-8 though, to ensure safety.
 pub struct MapInPlace<'a> {
+    /// Invariants:
+    ///
+    /// * This must always be valid UTF-8 when the [`MapInPlace`] is exposed to code
+    /// outside this crate.
     buf: &'a mut [u8],
+
+    /// Invariants:
+    ///
+    /// * `0..mapped_head` must always be in bounds for [`MapInPlace.buf`]
+    /// * `0..mapped_head` must always be valid UTF-8 (when exposed to code outside this crate)
     mapped_head: usize,
+
+    /// Invariants:
+    ///
+    /// * `unmapped_head` must be in bounds
+    /// * `unmapped_head..` always in bounds for [`MapInPlace.buf`]
     unmapped_head: usize,
 }
 
 /// Checks that `byte` is the first byte in a UTF-8 code point
 /// sequence
 ///
-/// Based of std library str::is_char_boundary
+/// Based of std library [`str::is_char_boundary`]
 #[inline]
-fn is_char_start(byte: u8) -> bool {
+// we intentionally wrap here
+#[allow(clippy::cast_possible_wrap)]
+const fn is_char_start(byte: u8) -> bool {
     // This is bit magic equivalent to: b < 128 || b >= 192
-    return (byte as i8) >= -0x40;
+    (byte as i8) >= -0x40
 }
 
 #[derive(Debug)]
@@ -32,12 +135,14 @@ impl<'a> MapInPlace<'a> {
     /// Creates a new `MapInPlace`, used to do in-place string conversions without allocating a new
     /// buffer.
     ///
-    /// This can only be done if the conversion does not increase the length of the string (So
-    /// calling this on an empty string is useless).
+    /// ```rust
+    /// let mut string = String::from("Hello, World!");
+    /// let mut map = in_place_string_map::MapInPlace::new(&mut string);
+    /// ```
     pub fn new(s: &'a mut str) -> Self {
         // Safety:
         //
-        // When this borrow ends (MapInPlace is dropped), the string must be valid UTF-8.
+        // When this borrow ends (MapInPlace is dropped/forgotten), the string must be valid UTF-8.
         // We also need to never expose invalid UTF-8 to the user.
         let buf = unsafe { s.as_bytes_mut() };
 
@@ -49,13 +154,65 @@ impl<'a> MapInPlace<'a> {
     }
 
     /// Returns the mapped portion of the string.
+    ///
+    /// ```rust
+    /// let mut string = String::from("Hello, World!");
+    /// let mut map = in_place_string_map::MapInPlace::new(&mut string);
+    ///
+    /// assert_eq!(map.mapped(), "");
+    ///
+    /// map.pop_chars(6);
+    ///
+    /// map.push_str("Yellow");
+    ///
+    /// assert_eq!(map.mapped(), "Yellow");
+    /// ```
     #[must_use]
     pub fn mapped(&self) -> &str {
-        &self.all()[0..self.mapped_head]
+        debug_assert!(self.mapped_head < self.buf.len());
+
+        // Safety: self.mapped_head has the invariant that it is always in bounds of `buf`.
+        let bytes = unsafe { self.buf.get_unchecked(0..self.mapped_head) };
+
+        unsafe { from_utf8_unchecked(bytes) }
     }
 
     /// Consumes this [`MapInPlace`] and returns the mapped slice of the original string with the
     /// original lifetime.
+    ///
+    /// This is useful for when you want the lifetime of the returned string to outlive the
+    /// instance of [`MapInPlace`].
+    ///
+    /// ```rust
+    /// fn push_yellow(s: &mut str) -> &mut str {
+    ///     let mut map = in_place_string_map::MapInPlace::new(s);
+    ///     map.pop_chars(6);
+    ///     map.push_str("Yellow");
+    ///     map.into_mapped()
+    /// }
+    ///
+    /// let mut string = String::from("Hello, World!");
+    /// let result = push_yellow(&mut string);
+    /// assert_eq!(result, "Yellow");
+    /// ```
+    ///
+    /// You cannot simply use [`MapInPlace::mapped`] because that will return a reference that
+    /// can't outlive the original [`MapInPlace`]
+    ///
+    /// ```compile_fail
+    /// fn push_yellow(s: &mut str) -> &str {
+    ///     let mut map = in_place_string_map::MapInPlace::new(s);
+    ///     map.pop_chars(6);
+    ///     map.push_str("Yellow");
+    ///
+    ///     // cannot return value referencing local variable `map`
+    ///     map.mapped()
+    /// }
+    ///
+    /// let mut string = String::from("Hello, World!");
+    /// let result = push_yellow(&mut string);
+    /// assert_eq!(result, "Yellow");
+    /// ```
     #[must_use]
     pub fn into_mapped(self) -> &'a mut str {
         let mapped_head = self.mapped_head;
@@ -64,6 +221,17 @@ impl<'a> MapInPlace<'a> {
     }
 
     /// Returns the not yet mapped portion of the string.
+    ///
+    /// ```rust
+    /// let mut string = String::from("Hello, World!");
+    /// let mut map = in_place_string_map::MapInPlace::new(&mut string);
+    ///
+    /// assert_eq!(map.unmapped(), "Hello, World!");
+    ///
+    /// map.pop_chars(5);
+    ///
+    /// assert_eq!(map.unmapped(), ", World!");
+    /// ```
     #[must_use]
     pub fn unmapped(&self) -> &str {
         &self.all()[self.unmapped_head..]
@@ -71,6 +239,38 @@ impl<'a> MapInPlace<'a> {
 
     /// Consumes this [`MapInPlace`] and returns the unmapped slice of the original string with the
     /// original lifetime.
+    ///
+    /// This is useful for when you want the lifetime of the returned string to outlive the
+    /// instance of [`MapInPlace`].
+    ///
+    /// ```rust
+    /// fn pop_five(s: &mut str) -> &mut str {
+    ///     let mut map = in_place_string_map::MapInPlace::new(s);
+    ///     map.pop_chars(5);
+    ///     map.into_unmapped()
+    /// }
+    ///
+    /// let mut string = String::from("Hello, World!");
+    /// let result = pop_five(&mut string);
+    /// assert_eq!(result, ", World!");
+    /// ```
+    ///
+    /// You cannot simply use [`MapInPlace::mapped`] because that will return a reference that
+    /// can't outlive the original [`MapInPlace`]
+    ///
+    /// ```compile_fail
+    /// fn pop_five(s: &mut str) -> &str {
+    ///     let mut map = in_place_string_map::MapInPlace::new(s);
+    ///     map.pop_chars(5);
+    ///
+    ///     // cannot return value referencing local variable `map`
+    ///     map.unmapped()
+    /// }
+    ///
+    /// let mut string = String::from("Hello, World!");
+    /// let result = pop_five(&mut string);
+    /// assert_eq!(result, ", World!");
+    /// ```
     #[must_use]
     pub fn into_unmapped(self) -> &'a mut str {
         let unmapped_head = self.unmapped_head;
@@ -78,21 +278,16 @@ impl<'a> MapInPlace<'a> {
         &mut self.into_all()[unmapped_head..]
     }
 
-    /// Reads the string as a whole. The contents of the section not included in either `mapped`
-    /// or `unmapped` are unspecified, but the string as a whole is guaranteed to be valid UTF-8.
     #[must_use]
-    pub fn all(&self) -> &str {
+    fn all(&self) -> &str {
         // Safety: self.buf is always valid UTF-8 if the user has access to it, so this is safe.
-        unsafe { std::str::from_utf8_unchecked(&self.buf[..]) }
+        unsafe { from_utf8_unchecked(&self.buf[..]) }
     }
 
-    /// Returns the original mapping given to [`MapInPlace::new`]. The contents of the section not
-    /// included in either `mapped` or `unmapped` are unspecified, but the string as a whole is
-    /// guaranteed to be valid UTF-8.
     #[must_use]
-    pub fn into_all(self) -> &'a mut str {
+    fn into_all(self) -> &'a mut str {
         // Safety: self.buf is always valid UTF-8 if the user has access to it, so this is safe.
-        unsafe { std::str::from_utf8_unchecked_mut(self.buf) }
+        unsafe { from_utf8_unchecked_mut(self.buf) }
     }
 
     /// Pushes a character onto the end of the mapped portion.
@@ -101,12 +296,6 @@ impl<'a> MapInPlace<'a> {
     ///
     /// * [`NoCapacityError`]: If there is not enough room to fit `ch` being pushed.
     pub fn push(&mut self, ch: char) -> Result<(), NoCapacityError> {
-        let chlen = ch.len_utf8();
-
-        if self.mapped_head + chlen > self.unmapped_head {
-            return Err(NoCapacityError);
-        }
-
         let mut tempbuf = [0_u8; 4_usize];
 
         let sbytes = ch.encode_utf8(&mut tempbuf);
@@ -143,7 +332,7 @@ impl<'a> MapInPlace<'a> {
 
         self.mapped_head += bytes.len();
         debug_assert!(self.mapped_head <= self.unmapped_head);
-        
+
         let area_to_zero = &mut self.buf[self.mapped_head..self.unmapped_head];
 
         if area_to_zero.len() > PARTIAL_ZERO_SIZE {
@@ -161,6 +350,25 @@ impl<'a> MapInPlace<'a> {
     }
 
     /// Pops a character from the start of the unmapped portion
+    ///
+    /// Will return [`None`] if there are no more characters left to pop.
+    ///
+    /// ```rust
+    /// let mut string = String::from("Hi!");
+    /// let mut map = in_place_string_map::MapInPlace::new(&mut string);
+    ///
+    /// assert_eq!(map.pop(), Some('H'));
+    /// assert_eq!(map.unmapped(), "i!");
+    ///
+    /// assert_eq!(map.pop(), Some('i'));
+    /// assert_eq!(map.unmapped(), "!");
+    ///
+    /// assert_eq!(map.pop(), Some('!'));
+    /// assert_eq!(map.unmapped(), "");
+    ///
+    /// assert_eq!(map.pop(), None);
+    /// assert_eq!(map.unmapped(), "");
+    /// ```
     pub fn pop(&mut self) -> Option<char> {
         self.pop_chars(1)
             .map(|x| x.chars().next().expect("pop_chars did not pop a char"))
@@ -170,8 +378,21 @@ impl<'a> MapInPlace<'a> {
     ///
     /// If `n` is 0 then will always return [`None`]
     ///
-    /// If this fails then `unmapped` will contain what can be popped, and no changes will have
-    /// been made to `self`.
+    /// If this fails because there are not enough characters then will return [`None`], and no
+    /// changes will have been made to `self`.
+    ///
+    /// ```rust
+    /// let mut string = String::from("Abcdef");
+    /// let mut map = in_place_string_map::MapInPlace::new(&mut string);
+    ///
+    /// assert_eq!(map.pop_chars(1), Some("A"));
+    /// assert_eq!(map.pop_chars(2), Some("bc"));
+    ///
+    /// // Nothing is done if you try to pop too many characters
+    /// assert_eq!(map.pop_chars(10), None);
+    ///
+    /// assert_eq!(map.pop_chars(3), Some("def"));
+    /// ```
     pub fn pop_chars(&mut self, n: usize) -> Option<&str> {
         if n == 0 {
             return None;
@@ -185,8 +406,25 @@ impl<'a> MapInPlace<'a> {
 
         self.unmapped_head += to_take;
 
-        // safety: who knows?
-        unsafe { Some(std::str::from_utf8_unchecked(s)) }
+        // Safety of from_utf8_unchecked:
+        //
+        // We slice the buffer starting at the original value for self.unmapped_head, which must be
+        // on a char boundary, this is an invariant of the type for safety (otherwise,
+        // self.unmapped() would create invalid UTF-8).
+        //
+        // self.unmapped_head is incremented by to_take, which also leaves it on a char boundary,
+        // because `idx` is on a char boundary when looked at relative to self.unmapped_head (since
+        // we got it from char_indices on self.unmapped())
+        //
+        // We add c.len_utf8() on top, which makes to_take on a char boundary relative to
+        // self.unmapped_head.
+        //
+        // Therefore, `s` is always valid UTF-8.
+
+        // We also need to keep the invariant that self.unmapped_head is always on a char boundary.
+        // But we already know it must be, since we're adding `to_take` to it, which the argument
+        // above proves is on a char boundary.
+        unsafe { Some(from_utf8_unchecked(s)) }
     }
 }
 
