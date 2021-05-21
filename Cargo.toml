@@ -8,3 +8,8 @@ description = "An in-place string modification library"
 keywords = ["text", "utility", "parser", "no_std"]
 categories = ["parsing"]
 license = "MIT OR Apache-2.0"
+
+exclude = [
+    ".drone.yml",
+    ".gitignore",
+]

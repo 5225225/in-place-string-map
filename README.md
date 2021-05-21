@@ -33,3 +33,12 @@ you'll just fail to push.
 More details about how it works are both in the code (it's somewhat commented)
 and [the blog
 post](https://www.5snb.club/posts/2021/03/27/in-place-string-mapping.html).
+
+## Bugs / Suggestions?
+
+I have a mirror of the repo over on
+<https://github.com/5225225/in-place-string-map> (This is *not* the canonical
+URL, that is hosted on my gitea at
+<https://git.5snb.club/5225225/in-place-string-map>). Feel free to make
+issues/pull requests against the github repo. Alternatively, contact me (Email
+in the authors field, or read the commit emails).
