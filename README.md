@@ -3,6 +3,8 @@
 Someone said C was better than Rust at in-place string modifications. So I made this.
 
 ```rust
+use in_place_string_map::MapInPlace;
+
 fn decode_percent(s: &mut str) -> &mut str {
     let mut m = MapInPlace::new(s);
 

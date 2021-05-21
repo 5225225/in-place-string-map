@@ -3,9 +3,8 @@ name = "in-place-string-map"
 version = "0.1.0"
 authors = ["5225225 <5225225@mailbox.org>"]
 edition = "2018"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[dev-dependencies]
-proptest = "0.10.1"
-proptest-derive = "0.2.0"
+repository = "https://git.5snb.club/5225225/in-place-string-map"
+description = "An in-place string modification library"
+keywords = ["text", "utility", "parser", "no_std"]
+categories = ["parsing"]
+license = "MIT OR Apache-2.0"

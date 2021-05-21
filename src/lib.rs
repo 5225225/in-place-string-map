@@ -37,17 +37,18 @@
 //! ## Safety
 //!
 //! This library takes care to ensure that the input string is always left in a valid state.
-//! 
-//! Since [`std::mem::forget`] is safe, no code can soundly rely on users to call destructors. The
+//!
+//! Since [`core::mem::forget`] is safe, no code can soundly rely on users to call destructors. The
 //! contents of the original borrowed string after any operation is left unspecified generally, but
 //! it is guaranteed to always be valid UTF-8.
 
-#![cfg_attr(not(test), no_std)]
 // https://twitter.com/reduct_rs/status/1387153973010829315
-
+#![cfg_attr(all(not(test)), no_std)]
 #![warn(clippy::all)]
 #![warn(clippy::pedantic)]
 #![warn(clippy::nursery)]
+#![warn(clippy::cargo)]
+#![warn(missing_docs)]
 
 /// Safety: Identical to [`core::str::from_utf8_unchecked`], only has a debug assertion that it is
 /// indeed valid UTF-8.
@@ -122,8 +123,27 @@ const fn is_char_start(byte: u8) -> bool {
     (byte as i8) >= -0x40
 }
 
+/// An error indicating that there was no capacity remaining when a push was attempted.
+///
+/// You should [`MapInPlace::pop`] more characters in order to make room for a push.
+///
+/// Keep in mind that not every UTF-8 character is the same size, so you may get this error even if
+/// you always have more pops than pushes, if you are pushing larger characters.
+///
+/// # Examples
+///
+/// ```rust
+/// use in_place_string_map::{MapInPlace, NoCapacityError};
+///
+/// let mut string = String::from("$");
+/// let mut map = MapInPlace::new(&mut string);
+///
+/// map.pop();
+///
+/// let error: NoCapacityError = map.push('£').unwrap_err();
+/// ```
 #[derive(Debug)]
-pub struct NoCapacityError;
+pub struct NoCapacityError(());
 
 // When zeroing sections of the string to ensure valid UTF-8, anything smaller than this will just
 // be zeroed with a .fill(), rather than trying to stop early.
@@ -169,7 +189,7 @@ impl<'a> MapInPlace<'a> {
     /// ```
     #[must_use]
     pub fn mapped(&self) -> &str {
-        debug_assert!(self.mapped_head < self.buf.len());
+        debug_assert!(self.buf.get(0..self.mapped_head).is_some());
 
         // Safety: self.mapped_head has the invariant that it is always in bounds of `buf`.
         let bytes = unsafe { self.buf.get_unchecked(0..self.mapped_head) };
@@ -292,6 +312,25 @@ impl<'a> MapInPlace<'a> {
 
     /// Pushes a character onto the end of the mapped portion.
     ///
+    /// ```rust
+    /// let mut string = String::from("Hello!");
+    /// let mut map = in_place_string_map::MapInPlace::new(&mut string);
+    /// map.pop_chars(6);
+    ///
+    /// assert_eq!(map.mapped(), "");
+    /// map.push('£').unwrap();
+    /// map.push('1').unwrap();
+    /// map.push('.').unwrap();
+    /// map.push('2').unwrap();
+    /// map.push('5').unwrap();
+    ///
+    /// assert_eq!(map.mapped(), "£1.25");
+    ///
+    /// map.push('5').unwrap_err();
+    ///
+    /// assert_eq!(map.mapped(), "£1.25");
+    /// ```
+    ///
     /// # Errors
     ///
     /// * [`NoCapacityError`]: If there is not enough room to fit `ch` being pushed.
@@ -305,7 +344,28 @@ impl<'a> MapInPlace<'a> {
         Ok(())
     }
 
-    /// Pushes a string onto the end of the mapped portion.
+    /// Pushes a string onto the end of the mapped portion. If the string is too long, an error is
+    /// returned, and no changes will be made to the input.
+    ///
+    /// ```rust
+    /// let mut string = String::from("Hello!");
+    /// let mut map = in_place_string_map::MapInPlace::new(&mut string);
+    /// map.pop_chars(6);
+    ///
+    /// assert_eq!(map.mapped(), "");
+    ///
+    /// map.push_str("This string is *far* too long!").unwrap_err();
+    ///
+    /// assert_eq!(map.mapped(), "");
+    ///
+    /// map.push_str("Short").unwrap();
+    ///
+    /// assert_eq!(map.mapped(), "Short");
+    ///
+    /// map.push_str(".").unwrap();
+    ///
+    /// assert_eq!(map.mapped(), "Short.");
+    /// ```
     ///
     /// # Errors
     ///
@@ -314,11 +374,11 @@ impl<'a> MapInPlace<'a> {
         let bytes = s.as_bytes();
 
         if self.buf.len() < self.mapped_head + bytes.len() {
-            return Err(NoCapacityError);
+            return Err(NoCapacityError(()));
         }
 
         if self.unmapped_head < self.mapped_head + bytes.len() {
-            return Err(NoCapacityError);
+            return Err(NoCapacityError(()));
         }
 
         // Safety: self.buf must be valid UTF-8 once this ends.
@@ -374,7 +434,9 @@ impl<'a> MapInPlace<'a> {
             .map(|x| x.chars().next().expect("pop_chars did not pop a char"))
     }
 
-    /// Pops `n` characters from the start of the unmapped portion
+    /// Pops `n` characters from the start of the unmapped portion.
+    ///
+    /// Note how this pops in terms of *characters*, not bytes.
     ///
     /// If `n` is 0 then will always return [`None`]
     ///
@@ -382,16 +444,17 @@ impl<'a> MapInPlace<'a> {
     /// changes will have been made to `self`.
     ///
     /// ```rust
-    /// let mut string = String::from("Abcdef");
+    /// let mut string = String::from("A £3.00 sandwich");
     /// let mut map = in_place_string_map::MapInPlace::new(&mut string);
     ///
-    /// assert_eq!(map.pop_chars(1), Some("A"));
-    /// assert_eq!(map.pop_chars(2), Some("bc"));
+    /// assert_eq!(map.pop_chars(0), None);
+    /// assert_eq!(map.pop_chars(2), Some("A "));
+    /// assert_eq!(map.pop_chars(5), Some("£3.00"));
     ///
     /// // Nothing is done if you try to pop too many characters
     /// assert_eq!(map.pop_chars(10), None);
     ///
-    /// assert_eq!(map.pop_chars(3), Some("def"));
+    /// assert_eq!(map.pop_chars(9), Some(" sandwich"));
     /// ```
     pub fn pop_chars(&mut self, n: usize) -> Option<&str> {
         if n == 0 {
@@ -426,6 +489,19 @@ impl<'a> MapInPlace<'a> {
         // above proves is on a char boundary.
         unsafe { Some(from_utf8_unchecked(s)) }
     }
+}
+
+// Source: https://github.com/rust-lang/cargo/issues/383#issuecomment-720873790
+#[cfg(doctest)]
+mod test_readme {
+    macro_rules! external_doc_test {
+        ($x:expr) => {
+            #[doc = $x]
+            extern "C" {}
+        };
+    }
+
+    external_doc_test!(include_str!("../README.md"));
 }
 
 #[cfg(test)]
